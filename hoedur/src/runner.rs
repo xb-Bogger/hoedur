@@ -9,8 +9,10 @@ use common::{
     exit::signal_exit_point,
     file_storage::FileStorage,
     fs::{decoder, decoder_slice, find_files, modify_time},
-    FxHashMap,
+    FxHashMap, FxHasher,
 };
+use std::hash::{Hash, Hasher};
+use serde_yaml;
 use emulator::{
     archive::{EmulatorEntry, EmulatorEntryKind},
     EmulatorConfig, EmulatorDebugConfig, EmulatorLimits, ExecutionResult, RunMode, StopReason,
@@ -40,6 +42,8 @@ pub struct RunnerConfig {
     emulator: EmulatorConfig,
     modeling: Modeling,
     command: Command,
+    name: String,
+    archive_dir_path: Option<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -134,7 +138,7 @@ impl Command {
             | Command::RunCorpusArchive(RunCorpusArchiveConfig { archive, .. }) => {
                 archive.as_ref().cloned()
             }
-            Command::Fuzzer(HoedurConfig { archive, .. }) => Some(archive.clone()),
+            Command::Fuzzer(_) => None,
         }
     }
 
@@ -154,12 +158,16 @@ impl RunnerConfig {
         emulator: EmulatorConfig,
         modeling: Modeling,
         command: Command,
+        name: String,
+        archive_dir_path: Option<PathBuf>,
     ) -> Self {
         Self {
             file_storage,
             emulator,
             modeling,
             command,
+            name,
+            archive_dir_path,
         }
     }
 
@@ -207,16 +215,31 @@ impl RunnerConfig {
         // emulator config
         let emulator_config = EmulatorConfig::read_from(&mut file_storage, debug)?;
 
+        // collect archive dir path for later export
+        let archive_dir_path = match &args.command {
+            cli::Command::Run(a) => Some(a.archive.archive_dir.archive_dir.clone()),
+            cli::Command::RunCov(a) => Some(a.archive.archive_dir.archive_dir.clone()),
+            cli::Command::RunCorpusArchive(a) => Some(a.archive.archive_dir.archive_dir.clone()),
+            cli::Command::Fuzz(_) => None,
+        };
+
         // parse command cli options
         let name = args.name;
-        let command = match args.command {
+        let mut command = match args.command {
             cli::Command::Run(args) => Command::Run(RunConfig::from_cli(&name, args)?),
             cli::Command::RunCov(args) => Command::RunCov(RunCovConfig::from_cli(&name, args)?),
             cli::Command::RunCorpusArchive(args) => {
                 Command::RunCorpusArchive(RunCorpusArchiveConfig::from_cli(&name, args)?)
             }
-            cli::Command::Fuzz(args) => Command::Fuzzer(HoedurConfig::from_cli(name, args)?),
+            cli::Command::Fuzz(ref args) => Command::Fuzzer(HoedurConfig::from_cli(name.clone(), args)?),
         };
+
+        // override fuzz output_dir to be under target config path
+        if let Command::Fuzzer(hc) = &mut command {
+            if let Some(parent) = file_storage.target_config().parent() {
+                hc.output_dir = parent.join("hoedur-project");
+            }
+        }
 
         // modeling
         let mut modeling = if let Some(archive) = command.archive() {
@@ -251,7 +274,14 @@ impl RunnerConfig {
                 .with_context(|| format!("Failed to load MMIO models from {path:?}"))?;
         }
 
-        Ok(Self::new(file_storage, emulator_config, modeling, command))
+        Ok(Self::new(
+            file_storage,
+            emulator_config,
+            modeling,
+            command,
+            name,
+            archive_dir_path,
+        ))
     }
 }
 
@@ -357,6 +387,36 @@ pub fn run(config: RunnerConfig) -> Result<()> {
         write_config(&mut archive.borrow_mut()).context("Failed to write config to archive")?;
         write_file_storage(&mut archive.borrow_mut(), &config.file_storage)
             .context("Failed to write file storage to archive")?;
+    } else if let Command::Fuzzer(HoedurConfig { output_dir, .. }) = &config.command {
+        // write config to directory
+        let cfg_dir = output_dir.join("config");
+        std::fs::create_dir_all(&cfg_dir).context("Failed to create config dir")?;
+        let args = std::env::args().collect::<Vec<_>>();
+        let cmdline = serde_yaml::to_vec(&args).context("serialize command line")?;
+        std::fs::write(cfg_dir.join("cmdline.yml"), cmdline).context("write cmdline.yml")?;
+        std::fs::write(cfg_dir.join("config.rs"), ::common::CONFIG.as_bytes())
+            .context("write hoedur config")?;
+        // write file storage
+        let fs_dir = cfg_dir.join("file-storage");
+        std::fs::create_dir_all(&fs_dir).context("create file-storage dir")?;
+        let mut filemap = common::FxHashMap::default();
+        for (path, content) in config.file_storage.files() {
+            let mut hasher = FxHasher::default();
+            content.hash(&mut hasher);
+            let hash = hasher.finish();
+            let sub = fs_dir.join(format!("{:016x?}", hash));
+            std::fs::create_dir_all(&sub).context("create hashed subdir")?;
+            let filename = path
+                .file_name()
+                .map(std::ffi::OsStr::to_string_lossy)
+                .unwrap_or_else(|| "noname".into())
+                .into_owned();
+            let out = sub.join(&filename);
+            std::fs::write(&out, content).with_context(|| format!("write {:?}", out))?;
+            filemap.insert(path.clone(), format!("config/file-storage/{:016x?}/{}", hash, filename));
+        }
+        let map = serde_yaml::to_vec(&filemap).context("serialize filemap")?;
+        std::fs::write(cfg_dir.join("filemap.yml"), map).context("write filemap.yml")?;
     }
 
     // create emulator
@@ -433,6 +493,8 @@ pub fn run(config: RunnerConfig) -> Result<()> {
     std::mem::drop(config.file_storage);
 
     // run input / fuzzer
+    // compute archive presence before moving command
+    let had_archive = config.command.archive().is_some();
     match config.command {
         Command::Run(run_config) => run_inputs(emulator, run_config),
         Command::RunCov(cov_config) => {
@@ -441,6 +503,20 @@ pub fn run(config: RunnerConfig) -> Result<()> {
         Command::RunCorpusArchive(corpus_config) => run_corpus_archive(emulator, corpus_config),
         Command::Fuzzer(hoedur_config) => hoedur::run_fuzzer(emulator, hoedur_config),
     }?;
+
+    // default export: extract compressed archive to directory and remove archive file
+    if let (Some(archive_dir), true) = (&config.archive_dir_path, had_archive) {
+        let archive_path = crate::archive::archive_file_path(archive_dir, &config.name);
+        let export_dir = archive_dir.join("hoedur-project");
+        if archive_path.is_file() {
+            log::info!("Exporting archive {:?} to {:?} ...", archive_path, export_dir);
+            crate::archive::export_archive_to_dir(&archive_path, &export_dir)?;
+            log::info!("Removing archive file {:?}", archive_path);
+            std::fs::remove_file(&archive_path).context("remove archive file")?;
+        } else {
+            log::warn!("Archive file {:?} not found, skip export", archive_path);
+        }
+    }
 
     log::info!("end of execution");
     Ok(())

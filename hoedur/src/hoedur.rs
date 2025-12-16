@@ -5,17 +5,16 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use archive::ArchiveBuilder;
 use emulator::Emulator;
 use fuzzer::Fuzzer;
 use modeling::input::InputFile;
 
-use crate::{archive::create_archive, cli};
+use crate::cli;
 
 #[derive(Debug)]
 pub struct HoedurConfig {
     name: String,
-    pub(crate) archive: ArchiveBuilder,
+    pub(crate) output_dir: PathBuf,
     seed: Option<u64>,
     pub(crate) prefix_input: Vec<PathBuf>,
     import_corpus: Vec<PathBuf>,
@@ -26,7 +25,7 @@ pub struct HoedurConfig {
 impl HoedurConfig {
     pub fn new(
         name: String,
-        archive: ArchiveBuilder,
+        output_dir: PathBuf,
         seed: Option<u64>,
         prefix_input: Vec<PathBuf>,
         import_corpus: Vec<PathBuf>,
@@ -35,7 +34,7 @@ impl HoedurConfig {
     ) -> Self {
         Self {
             name,
-            archive,
+            output_dir,
             seed,
             prefix_input,
             import_corpus,
@@ -44,9 +43,9 @@ impl HoedurConfig {
         }
     }
 
-    pub fn from_cli(name: String, args: cli::HoedurArguments) -> Result<Self> {
-        let archive = create_archive(&name, &args.archive_dir.archive_dir)?;
-        let seed = if let Some(seed_file) = args.seed {
+    pub fn from_cli(name: String, args: &cli::HoedurArguments) -> Result<Self> {
+        let output_dir = std::env::current_dir()?.join("hoedur-project");
+        let seed = if let Some(seed_file) = args.seed.clone() {
             // random seed from file
             let mut seed = [0u8; 8];
 
@@ -70,10 +69,10 @@ impl HoedurConfig {
 
         Ok(Self::new(
             name,
-            archive,
+            output_dir,
             seed,
-            args.prefix.prefix_input,
-            args.import_corpus,
+            args.prefix.prefix_input.clone(),
+            args.import_corpus.clone(),
             args.snapshots,
             args.statistics.statistics,
         ))
@@ -87,7 +86,7 @@ pub(crate) fn run_fuzzer(emulator: Emulator<InputFile>, config: HoedurConfig) ->
         config.import_corpus,
         config.statistics,
         config.snapshots,
-        config.archive,
+        config.output_dir,
         emulator,
     )?
     .run()

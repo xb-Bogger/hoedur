@@ -1,4 +1,5 @@
 use std::{
+    fs,
     path::{Path, PathBuf},
     rc::Rc,
     sync::atomic::Ordering,
@@ -6,10 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use archive::{
-    tar::{write_file, write_serialized},
-    Archive, ArchiveBuilder,
-};
+use archive::Archive;
 use common::{
     config::{
         corpus::REPLACE_WITH_SHORTER_INPUT,
@@ -35,7 +33,7 @@ use rand_distr::{Distribution, WeightedAliasIndex};
 
 use crate::{
     corpus::{Corpus, CorpusResult, CorpusResultKind, InputInfo, InputResult, NewCoverage},
-    corpus_archive::{write_input_file, IntoInputFileIter},
+    corpus_archive::{write_input_file_dir, IntoInputFileIter},
     dict::Dictionary,
     mutation::{Mutation, MutationContext, MutationLog, MutationMode, MutatorKind, Random},
     statistics::{Statistics, StatisticsInfo},
@@ -44,7 +42,7 @@ use crate::{
 };
 
 pub struct Fuzzer {
-    archive: ArchiveBuilder,
+    output_dir: PathBuf,
     emulator: Emulator<InputFile>,
     pre_fuzzing: EmulatorSnapshot,
     corpus: Corpus,
@@ -145,7 +143,7 @@ impl Fuzzer {
         import_corpus: Vec<PathBuf>,
         statistics: bool,
         snapshots: bool,
-        archive: ArchiveBuilder,
+        output_dir: PathBuf,
         mut emulator: Emulator<InputFile>,
     ) -> Result<Self> {
         // pre-fuzzer snapshot
@@ -169,7 +167,7 @@ impl Fuzzer {
 
         // create fuzzer
         let mut fuzzer = Self {
-            archive,
+            output_dir,
             emulator,
             pre_fuzzing,
             corpus: Corpus::new(),
@@ -700,9 +698,9 @@ impl Fuzzer {
                     statistics_info.update_input(info.result());
                 }
 
-                // write to corpus archive
+                // write to corpus directory
                 if ARCHIVE_EARLY_WRITE || !info.result().category().schedule() {
-                    write_input_file(&mut self.archive.borrow_mut(), info.result())?;
+                    write_input_file_dir(&self.output_dir, info.result())?;
                 }
 
                 // add to corpus
@@ -744,9 +742,9 @@ impl Fuzzer {
 
         // replace shorter input
         if REPLACE_WITH_SHORTER_INPUT {
-            // write to corpus archive
+            // write to corpus directory
             if ARCHIVE_KEEP_SHORTER_INPUT {
-                write_input_file(&mut self.archive.borrow_mut(), &result)?;
+                write_input_file_dir(&self.output_dir, &result)?;
             }
 
             // update corpus file
@@ -905,43 +903,27 @@ impl Fuzzer {
     }
 
     fn write_config(&mut self) -> Result<()> {
-        let timestamp = epoch()?;
-
-        // write seed
-        write_file(
-            &mut self.archive.borrow_mut(),
-            "config/seed.bin",
-            timestamp,
-            &self.seed.to_be_bytes(),
-        )
-        .context("write corpus seed")?;
+        let dir = self.output_dir.join("config");
+        fs::create_dir_all(&dir).context("create config dir")?;
+        fs::write(dir.join("seed.bin"), &self.seed.to_be_bytes()).context("write corpus seed")?;
 
         Ok(())
     }
 
     fn write_statistics(&mut self) -> Result<()> {
-        let timestamp = epoch()?;
+        let dir = self.output_dir.join("statistics");
+        fs::create_dir_all(&dir).context("create statistics dir")?;
 
         // executions history
         if let Some(executions) = self.statistics.executions() {
-            write_serialized(
-                &mut self.archive.borrow_mut(),
-                "statistics/executions.bin",
-                timestamp,
-                &executions,
-            )
-            .context("write executions history")?;
+            let buf = serde_yaml::to_vec(&executions).context("serialize executions history")?;
+            fs::write(dir.join("executions.bin"), buf).context("write executions history")?;
         }
 
         // input size history
         if let Some(input_size) = self.statistics.input_size() {
-            write_serialized(
-                &mut self.archive.borrow_mut(),
-                "statistics/input-size.bin",
-                timestamp,
-                &input_size,
-            )
-            .context("write input size history")?;
+            let buf = serde_yaml::to_vec(&input_size).context("serialize input size history")?;
+            fs::write(dir.join("input-size.bin"), buf).context("write input size history")?;
         }
 
         Ok(())
@@ -949,7 +931,7 @@ impl Fuzzer {
 
     fn write_input_files(&mut self) -> Result<()> {
         for info in self.corpus.inputs() {
-            write_input_file(&mut self.archive.borrow_mut(), info.result())?;
+            write_input_file_dir(&self.output_dir, info.result())?;
         }
 
         Ok(())

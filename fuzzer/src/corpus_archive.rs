@@ -22,6 +22,9 @@ use crate::{
     InputCategory, InputResult,
 };
 
+use std::fs::{self, File};
+use std::io::Write as IoWrite;
+
 #[derive(Debug, Clone, Copy)]
 pub enum CorpusEntryKind {
     Common(CommonEntryKind),
@@ -170,4 +173,24 @@ pub fn write_input_file<W: Write>(
         |writer| result.file().write_to(writer),
     )
     .context("add input file to corpus archive")
+}
+
+pub fn write_input_file_dir(dir: &Path, result: &InputResult) -> Result<()> {
+    let subdir = match result.category() {
+        InputCategory::Input => "input",
+        InputCategory::Crash => "crash",
+        InputCategory::Exit => "exit",
+        InputCategory::Timeout => "timeout",
+        InputCategory::Invalid => "invalid",
+    };
+    let out_dir = dir.join(subdir);
+    fs::create_dir_all(&out_dir).with_context(|| format!("create dir {:?}", out_dir))?;
+    let path = out_dir.join(result.file().filename());
+    let mut f = File::create(&path).with_context(|| format!("create file {:?}", path))?;
+    result
+        .file()
+        .write_to(&mut f)
+        .context("write input file to directory")?;
+    f.flush().ok();
+    Ok(())
 }

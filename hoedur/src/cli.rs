@@ -127,9 +127,6 @@ pub struct HoedurArguments {
     #[command(flatten)]
     pub prefix: ArgumentsPrefixInput,
 
-    #[command(flatten)]
-    pub archive_dir: ArchiveDir,
-
     /// Use seed for a deterministic fuzzing run
     #[arg(long, value_name = PATH, value_hint = ValueHint::FilePath, display_order = 120)]
     pub seed: Option<PathBuf>,
