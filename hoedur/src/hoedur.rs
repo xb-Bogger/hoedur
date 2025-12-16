@@ -44,7 +44,7 @@ impl HoedurConfig {
     }
 
     pub fn from_cli(name: String, args: &cli::HoedurArguments) -> Result<Self> {
-        let output_dir = std::env::current_dir()?.join("hoedur-project");
+        let output_dir = std::env::current_dir()?.join("project");
         let seed = if let Some(seed_file) = args.seed.clone() {
             // random seed from file
             let mut seed = [0u8; 8];

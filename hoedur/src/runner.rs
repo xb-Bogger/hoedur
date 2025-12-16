@@ -237,7 +237,7 @@ impl RunnerConfig {
         // override fuzz output_dir to be under target config path
         if let Command::Fuzzer(hc) = &mut command {
             if let Some(parent) = file_storage.target_config().parent() {
-                hc.output_dir = parent.join("hoedur-project");
+                hc.output_dir = parent.join("project");
             }
         }
 
@@ -507,7 +507,7 @@ pub fn run(config: RunnerConfig) -> Result<()> {
     // default export: extract compressed archive to directory and remove archive file
     if let (Some(archive_dir), true) = (&config.archive_dir_path, had_archive) {
         let archive_path = crate::archive::archive_file_path(archive_dir, &config.name);
-        let export_dir = archive_dir.join("hoedur-project");
+        let export_dir = archive_dir.join("project");
         if archive_path.is_file() {
             log::info!("Exporting archive {:?} to {:?} ...", archive_path, export_dir);
             crate::archive::export_archive_to_dir(&archive_path, &export_dir)?;
