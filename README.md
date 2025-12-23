@@ -28,7 +28,7 @@ Hoedur consists of different main components as listed below:
 ### Dependencies
 Ubuntu 18.04 / Debian 12:
 ```sh
-apt install -y clang curl git libfdt-dev libglib2.0-dev libpixman-1-dev libxcb-shape0-dev libxcb-xfixes0-dev ninja-build patchelf pkg-config python3-psutil zstd make
+apt install -y clang curl git libfdt-dev libglib2.0-dev libpixman-1-dev libxcb-shape0-dev libxcb-xfixes0-dev ninja-build patchelf pkg-config python3-psutil zstd make cargo
 ```
 
 ### Install
